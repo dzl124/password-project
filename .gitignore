@@ -1,0 +1,9 @@
+# Python
+__pycache__/
+.venv/
+
+# Tools
+.mypy_cache/
+
+# macOS
+.DS_Store
