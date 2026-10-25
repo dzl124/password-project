@@ -19,8 +19,8 @@ def checker(pw: str)->list[str]:
         A list of error messages, one per broken rule. An empty list
         means the password is valid.
     """
-
-    errors = []
+    
+    errors: list[str]= []
     length = len(pw)
     special_count = sum(1 for c in pw if c in SPECIAL_CHARS)
     if length < MIN_LENGTH:
