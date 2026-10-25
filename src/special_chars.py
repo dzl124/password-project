@@ -1,5 +1,5 @@
 # src/special_chars.py
-"""using the string libary i have defined what i consider to be special
+"""Using the string library, I have defined what I consider to be special
 that will be verified"""
 import string
 
