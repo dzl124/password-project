@@ -1,12 +1,13 @@
 """Password rule checks and the error messages shown when a rule fails."""
-from src.special_chars import SPECIAL_CHARS
+import string
 
+SPECIAL_CHARS = frozenset(string.punctuation)
 MIN_LENGTH = 10
-MAX_LENGTH = 24
+MAX_LENGTH = 64
 MIN_SPECIAL = 2
 
 
-def checker(pw: str)->list[str]:
+def password_checker(pw: str)-> list[str]:
     """Check whether a password meets every requirement.
 
     Runs every rule (length, special characters, uppercase, lowercase,
@@ -19,10 +20,11 @@ def checker(pw: str)->list[str]:
         A list of error messages, one per broken rule. An empty list
         means the password is valid.
     """
-    
-    errors: list[str]= []
+
+    errors: list[str] = []
     length = len(pw)
     special_count = sum(1 for c in pw if c in SPECIAL_CHARS)
+
     if length < MIN_LENGTH:
         errors.append(f"Too short: you have {length} characters, "
                       f"you need at least {MIN_LENGTH}.")
@@ -30,7 +32,8 @@ def checker(pw: str)->list[str]:
         errors.append(f"Too long: you have {length} characters, "
                       f"the max is {MAX_LENGTH}.")
     if special_count < MIN_SPECIAL:
-        errors.append(f"Password needs at least {MIN_SPECIAL} special characters.")
+        errors.append(f"Not enough special characters: you have {special_count}, "
+                      f"you need at least {MIN_SPECIAL}.")
     if not any(c.isupper() for c in pw):
         errors.append("Password needs at least one uppercase letter.")
     if not any(c.islower() for c in pw):
