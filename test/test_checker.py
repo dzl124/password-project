@@ -1,5 +1,5 @@
 """Tests for password_checker: each rule alone, every rule at once, and the length limits."""
-from src.checker import password_checker
+from pivault.checker import password_checker
 
 def test_all_valid():
     """ test valid password"""

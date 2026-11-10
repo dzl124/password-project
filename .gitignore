@@ -10,3 +10,6 @@ __pycache__/
 
 # Private design notes
 DESIGN.md
+
+# Build files
+*.egg-info/
