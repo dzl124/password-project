@@ -1,4 +1,5 @@
 """Password rule checks and the error messages shown when a rule fails."""
+
 import string
 
 SPECIAL_CHARS = frozenset(string.punctuation)
@@ -7,7 +8,7 @@ MAX_LENGTH = 64
 MIN_SPECIAL = 2
 
 
-def password_checker(pw: str)-> list[str]:
+def password_checker(pw: str) -> list[str]:
     """Check whether a password meets every requirement.
 
     Runs every rule (length, special characters, uppercase, lowercase,
