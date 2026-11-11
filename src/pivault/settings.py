@@ -1,5 +1,6 @@
 """Settings for the pivault application."""
 
+import string
 from pathlib import Path
 
 # Lockout settings
@@ -25,6 +26,25 @@ INCORRECT_SEARCH_DELAY_SECONDS = 3
 DELETED_ENTRIES_KEPT_SECONDS = 14 * 24 * 60 * 60  # 14 days
 # Minimum master key length
 MIN_MASTER_KEY_LENGTH = 16
+
+# Encryption
+# Salt length in bytes, one salt per lockbox
+SALT_LENGTH = 16
+# scrypt cost settings (OWASP: N=2^17, r=8, p=1), about 0.4 seconds and 128 MB on the Pi
+SCRYPT_N = 2**17
+SCRYPT_R = 8
+SCRYPT_P = 1
+
+# Recovery code
+# Capital letters and digits, minus look-alikes (O/0, I/1/L), 31 characters
+RECOVERY_CODE_ALL_CHARS = string.ascii_uppercase + string.digits
+RECOVERY_CODE_BANNED_CHARS = "O", "L", "I", "0", "1"
+RECOVERY_CODE_CHARS = "".join(
+    char for char in RECOVERY_CODE_ALL_CHARS if char not in RECOVERY_CODE_BANNED_CHARS
+)
+# 20 characters in groups of 4, like ABCD-EFGH-JKMN-PQRS-TUVW
+RECOVERY_CODE_LENGTH = 20
+RECOVERY_CODE_GROUP_SIZE = 4
 
 # Folders and files
 # Vault paths
