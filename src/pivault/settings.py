@@ -45,6 +45,8 @@ RECOVERY_CODE_CHARS = "".join(
 # 20 characters in groups of 4, like ABCD-EFGH-JKMN-PQRS-TUVW
 RECOVERY_CODE_LENGTH = 20
 RECOVERY_CODE_GROUP_SIZE = 4
+# Number of groups; LENGTH must divide evenly by GROUP_SIZE
+RECOVERY_CODE_GROUP_TOTAL = RECOVERY_CODE_LENGTH // RECOVERY_CODE_GROUP_SIZE
 
 # Folders and files
 # Vault paths

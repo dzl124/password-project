@@ -71,7 +71,15 @@ def make_key_from_secret(secret: str, salt: bytes) -> bytes:
 
     Returns:
         bytes: The derived Fernet key.
+
+    Raises:
+        ValueError: If the salt is not SALT_LENGTH bytes, for example
+        when a lockbox file is damaged.
     """
+    if len(salt) != settings.SALT_LENGTH:
+        raise ValueError(
+            f"Salt must be {settings.SALT_LENGTH} bytes, got {len(salt)}."
+        )
     secret = unicodedata.normalize("NFC", secret)
     kdf = Scrypt(
         salt=salt,
