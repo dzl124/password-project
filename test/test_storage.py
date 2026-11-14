@@ -209,6 +209,12 @@ def test_compare_form_german_ss() -> None:
     assert compare_form("Straße") == compare_form("STRASSE")
 
 
+def test_compare_form_accented_letter_same() -> None:
+    """Test that both ways of writing é compare equal, even with different capitals."""
+    assert compare_form("caf\u00e9") == compare_form("cafe\u0301")
+    assert compare_form("CAF\u00c9") == compare_form("cafe\u0301")
+
+
 def test_compare_form_different_names() -> None:
     """Test that different names stay different."""
     assert compare_form("denzel") != compare_form("denzel2")

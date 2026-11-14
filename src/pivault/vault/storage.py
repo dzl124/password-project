@@ -1,16 +1,15 @@
 """Storage functions for the pivault application: entries and deleted entries."""
 
 import unicodedata
-
 from pivault import settings
-
+Entry = dict[str, str]
 
 class StorageError(Exception):
     """Raised when the entries file is missing or damaged."""
 
 
 def clean_website(website: str) -> str:
-    """Clean and check a website name before it is saved or searched.
+    """Clean and check a website name before it is saved.
 
     Trims spaces from both ends and lowercases it.
 
@@ -36,7 +35,7 @@ def clean_website(website: str) -> str:
 
 
 def clean_username(username: str) -> str:
-    """Clean and check a username before it is saved or searched.
+    """Clean and check a username before it is saved.
 
     Trims spaces from both ends and normalizes it to NFC so both ways of
     writing é match. Capitals are kept.
@@ -65,7 +64,8 @@ def clean_username(username: str) -> str:
 def compare_form(text: str) -> str:
     """Convert text to a form suitable for comparison.
 
-    Used so search and duplicate checks ignore capitals (Denzel and denzel match).
+    Used so search and duplicate checks ignore capitals (Denzel and denzel match)
+    and both ways of writing é match. Only used for comparing, never saved.
 
     Args:
         text (str): The text to be compared.
@@ -73,4 +73,7 @@ def compare_form(text: str) -> str:
     Returns:
         str: The text in a case-insensitive form for comparison.
     """
-    return text.casefold()
+    # Split letters into base + accent (NFD) before and after casefold,
+    # because casefold alone doesn't merge the two ways of writing é.
+    split = unicodedata.normalize("NFD", text)
+    return unicodedata.normalize("NFD", split.casefold())

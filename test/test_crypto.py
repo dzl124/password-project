@@ -146,8 +146,8 @@ def test_different_secrets_different_keys() -> None:
 def test_accented_letter_same_key() -> None:
     """Test that both ways of writing é give the same key."""
     salt = make_salt()
-    one_char = "café"
-    two_chars = "café"
+    one_char = "caf\u00e9"
+    two_chars = "cafe\u0301"
     key1 = make_key_from_secret(one_char, salt)
     key2 = make_key_from_secret(two_chars, salt)
     assert key1 == key2
