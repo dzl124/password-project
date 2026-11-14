@@ -61,3 +61,11 @@ LOCKOUT_FILE = VAULT_FOLDER / "lockout.json"
 ADMIN_FOLDER = Path("/var/lib/pivault-admin")
 DELETED_ENTRIES_FILE = ADMIN_FOLDER / "deleted_entries.jsonl"
 ACCESS_LOG_FILE = ADMIN_FOLDER / "access.log"
+
+# Entries
+# Longest website name allowed
+MAX_WEBSITE_LENGTH = 64
+# Longest username allowed, long enough for most email addresses
+MAX_USERNAME_LENGTH = 48
+# Lowercase letters, digits, - and _ (no dots, spaces or accents)
+WEBSITE_ALLOWED_CHARS = string.ascii_lowercase + string.digits + "-_"
