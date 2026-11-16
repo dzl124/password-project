@@ -1,9 +1,20 @@
 """Tests for the pivault storage functions."""
 
+from pathlib import Path
+
 import pytest
 
 from pivault import settings
-from pivault.vault.storage import clean_username, clean_website, compare_form
+from pivault.vault.storage import (
+    Entry,
+    StorageError,
+    clean_username,
+    clean_website,
+    compare_form,
+    find_entry,
+    load_entries,
+    search,
+)
 
 
 # clean_website
@@ -232,3 +243,135 @@ def test_compare_form_with_cleaned_username() -> None:
     stored = clean_username("CH@@#ssee00")
     assert stored == "CH@@#ssee00"
     assert compare_form(stored) == "ch@@#ssee00"
+
+
+# Sample entries for find_entry and search, deliberately not in website order.
+
+def sample_entries() -> list[Entry]:
+    """Return a fresh list of sample entries for each test."""
+    return [
+        {"website": "spotify", "username": "denzel", "password": "token1"},
+        {"website": "netflix", "username": "jeffa", "password": "token2"},
+        {"website": "amazon", "username": "Denzel", "password": "token3"},
+        {"website": "netflix", "username": "Denzel", "password": "token4"},
+        {"website": "caf\u00e9", "username": "bob", "password": "token5"},
+    ]
+
+
+# find_entry
+
+def test_return_entry_valid() -> None:
+    """Test that find_entry returns the correct entry when given valid parameters."""
+
+    result = find_entry(sample_entries(), "SPOTIFY", "denzel")
+    assert result == sample_entries()[0]
+
+
+def test_find_entry_not_first() -> None:
+    """Test that the loop keeps going past entries that don't match."""
+    result = find_entry(sample_entries(), "netflix", "denzel")
+    assert result is not None
+    assert result["password"] == "token4"
+
+
+def test_find_entry_needs_both() -> None:
+    """Test that the right website with the wrong username finds nothing."""
+    assert find_entry(sample_entries(), "netflix", "bob") is None
+
+
+def test_find_entry_empty_list() -> None:
+    """Test that an empty vault finds nothing."""
+    assert find_entry([], "netflix", "Denzel") is None
+
+
+def test_find_entry_accented() -> None:
+    """Test that a two-piece é finds a saved one-piece é."""
+    result = find_entry(sample_entries(), "cafe\u0301", "BOB")
+    assert result is not None
+    assert result["password"] == "token5"
+
+
+# search
+
+def passwords(results: list[Entry]) -> list[str]:
+    """Return just the password tokens, to check which entries came back and in what order."""
+    return [entry["password"] for entry in results]
+
+
+def test_search_username_sorted() -> None:
+    """Test that a username is found on every site, sorted by website."""
+    assert passwords(search(sample_entries(), "denzel")) == ["token3", "token4", "token1"]
+
+
+def test_search_website_capitals_and_spaces() -> None:
+    """Test that capitals and spaces around the query are ignored."""
+    assert passwords(search(sample_entries(), "  NETFLIX ")) == ["token4", "token2"]
+
+
+def test_search_exact_only() -> None:
+    """Test that part of a name finds nothing."""
+    assert not search(sample_entries(), "net")
+
+
+def test_search_blank_query() -> None:
+    """Test that an empty or only-spaces query finds nothing."""
+    assert not search(sample_entries(), "")
+    assert not search(sample_entries(), "   ")
+
+
+def test_search_both_fields_once() -> None:
+    """Test that an entry matching on website and username appears only once."""
+    entries: list[Entry] = [{"website": "denzel", "username": "denzel", "password": "x"}]
+    assert len(search(entries, "denzel")) == 1
+
+
+# load_entries
+
+def write_entries_file(folder: Path, text: str) -> Path:
+    """Write text to entries.json in a test folder and return its path."""
+    path = folder / "entries.json"
+    path.write_text(text, encoding="utf-8")
+    return path
+
+
+def test_load_entries_good_file(tmp_path: Path) -> None:
+    """Test that a good file loads every entry, in file order."""
+    text = """[
+      {"website": "netflix", "username": "Denzel", "password": "token1"},
+      {"website": "amazon", "username": "jeffa", "password": "token2"}
+    ]"""
+    assert load_entries(write_entries_file(tmp_path, text)) == [
+        {"website": "netflix", "username": "Denzel", "password": "token1"},
+        {"website": "amazon", "username": "jeffa", "password": "token2"},
+    ]
+
+
+def test_load_entries_missing_file(tmp_path: Path) -> None:
+    """Test that a missing file raises StorageError instead of giving an empty vault."""
+    with pytest.raises(StorageError):
+        load_entries(tmp_path / "entries.json")
+
+
+def test_load_entries_not_json(tmp_path: Path) -> None:
+    """Test that a file that isn't JSON raises StorageError and is left untouched."""
+    path = write_entries_file(tmp_path, "not json")
+    with pytest.raises(StorageError):
+        load_entries(path)
+    assert path.read_text(encoding="utf-8") == "not json"
+
+
+def test_load_entries_missing_key(tmp_path: Path) -> None:
+    """Test that an entry with no password raises StorageError naming the entry."""
+    text = '[{"website": "a", "username": "b", "password": "c"}, {"website": "d", "username": "e"}]'
+    with pytest.raises(StorageError, match="Entry 2"):
+        load_entries(write_entries_file(tmp_path, text))
+
+
+def test_load_entries_duplicate(tmp_path: Path) -> None:
+    """Test that two entries differing only by capitals raise StorageError."""
+    text = """[
+      {"website": "netflix", "username": "Denzel", "password": "x"},
+      {"website": "Netflix", "username": "denzel", "password": "y"}
+    ]"""
+    with pytest.raises(StorageError):
+        load_entries(write_entries_file(tmp_path, text))
