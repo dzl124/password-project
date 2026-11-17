@@ -1,7 +1,10 @@
 """Storage functions for the pivault application: entries and deleted entries."""
 
 import json
+import os
+import tempfile
 import unicodedata
+from datetime import datetime, timezone
 from pathlib import Path
 
 from pivault import settings
@@ -12,6 +15,9 @@ Entry = dict[str, str]
 
 # The exact keys every entry in entries.json must have.
 ENTRY_FIELDS = frozenset({"website", "username", "password"})
+
+# Why an entry went to the deleted-entries file.
+DELETE_REASONS = frozenset({"deleted", "overwritten"})
 
 
 class StorageError(Exception):
@@ -182,3 +188,207 @@ def load_entries(path: Path) -> list[Entry]:
 
     entries: list[Entry] = data
     return entries
+
+
+def save_file_safely(path: Path, text: str) -> None:
+    """Write text to a file so a power cut never leaves it half-written.
+
+    Writes a temp file in the same folder, forces it to disk, swaps it in
+    with one rename, then forces the folder to disk. The file ends up
+    owner-only.
+
+    Args:
+        path (Path): The file to write, like settings.ENTRIES_FILE.
+        text (str): The file's new contents.
+
+    Raises:
+        OSError: If the folder is missing or the disk is full. The temp
+        file is removed first, and the old file is left as it was.
+    """
+    fd, temp_name = tempfile.mkstemp(dir=path.parent, suffix=".tmp")
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as file:
+            file.write(text)
+            file.flush()
+            os.fsync(file.fileno())
+        os.replace(temp_name, path)
+    except BaseException:
+        os.unlink(temp_name)
+        raise
+
+    folder_fd = os.open(path.parent, os.O_RDONLY)
+    try:
+        os.fsync(folder_fd)
+    finally:
+        os.close(folder_fd)
+
+
+def save_entries(path: Path, entries: list[Entry]) -> None:
+    """Save every entry to entries.json, safely.
+
+    Uses save_file_safely, so a power cut never leaves the file half-written.
+
+    Args:
+        path (Path): The entries file, normally settings.ENTRIES_FILE.
+        entries (list[Entry]): Every entry to save, replacing what was there.
+
+    Raises:
+        OSError: Passed on from save_file_safely if the folder is missing
+        or the disk is full.
+    """
+    save_file_safely(path, json.dumps(entries, indent=2) + "\n")
+
+
+def append_deleted(path: Path, entry: Entry, laptop: str, reason: str) -> None:
+    """Add one record to the deleted-entries file.
+
+    Appends one JSON line and never rewrites the file, because on the Pi
+    the file is append-only. The password stays locked.
+
+    Args:
+        path (Path): The deleted-entries file, normally settings.DELETED_ENTRIES_FILE.
+        entry (Entry): The entry being deleted or overwritten.
+        laptop (str): Which laptop was connected.
+        reason (str): "deleted" or "overwritten".
+
+    Raises:
+        ValueError: If the reason isn't in DELETE_REASONS.
+        OSError: If the file can't be written.
+    """
+    if reason not in DELETE_REASONS:
+        raise ValueError(f"Invalid delete reason: {reason!r}.")
+    deleted_at = datetime.now(timezone.utc).isoformat(timespec="seconds")
+    record = {**entry, "laptop": laptop, "deleted_at": deleted_at, "reason": reason}
+    with open(path, "a", encoding="utf-8") as file:
+        file.write(json.dumps(record) + "\n")
+        file.flush()
+        os.fsync(file.fileno())
+
+
+def move_to_deleted(
+    entries: list[Entry],
+    deleted_path: Path,
+    entry: Entry,
+    laptop: str,
+    reason: str,
+) -> None:
+    """Record an entry in the deleted-entries file, then remove it from the list.
+
+    The deleted file is written first, so a power cut can't lose the entry.
+    This only changes the list in memory: the caller still has to save it.
+
+    Args:
+        entries (list[Entry]): The entries list, changed in place.
+        deleted_path (Path): The deleted-entries file.
+        entry (Entry): The entry to move, which must be in entries.
+        laptop (str): Which laptop was connected.
+        reason (str): "deleted" or "overwritten".
+
+    Raises:
+        ValueError: If the reason isn't in DELETE_REASONS. The list is left unchanged.
+        OSError: If the deleted file can't be written. The list is left unchanged.
+    """
+    append_deleted(deleted_path, entry, laptop, reason)
+    entries.remove(entry)
+
+
+def add_entry(entries_path: Path, deleted_path: Path, laptop: str, new_entry: Entry) -> None:
+    """Save a new entry, overwriting any entry with the same website and username.
+
+    Capitals are ignored when matching. An overwritten entry goes to the
+    deleted-entries file first, so it can be restored. The app asks the
+    y/n overwrite question before calling this.
+
+    Args:
+        entries_path (Path): The entries file, normally settings.ENTRIES_FILE.
+        deleted_path (Path): The deleted-entries file, normally settings.DELETED_ENTRIES_FILE.
+        laptop (str): Which laptop was connected.
+        new_entry (Entry): The entry to save, already cleaned, with its password locked.
+
+    Raises:
+        StorageError: If entries.json is missing or damaged.
+        OSError: If a file can't be written.
+    """
+    entries = load_entries(entries_path)
+    existing = find_entry(entries, new_entry["website"], new_entry["username"])
+    if existing is not None:
+        move_to_deleted(entries, deleted_path, existing, laptop, "overwritten")
+    entries.append(new_entry)
+    save_entries(entries_path, entries)
+
+
+def delete_entry(
+    entries_path: Path,
+    deleted_path: Path,
+    laptop: str,
+    website: str,
+    username: str,
+) -> None:
+    """Delete an entry from the entries file and move it to the deleted-entries file.
+
+    Capitals are ignored. The deleted file is written first.
+
+    Args:
+        entries_path (Path): The entries file, normally settings.ENTRIES_FILE.
+        deleted_path (Path): The deleted-entries file, normally settings.DELETED_ENTRIES_FILE.
+        laptop (str): Which laptop was connected.
+        website (str): The website of the entry to delete.
+        username (str): The username of the entry to delete.
+
+    Raises:
+        ValueError: If no entry matches the website and username. Nothing is changed.
+        StorageError: If entries.json is missing or damaged.
+        OSError: If a file can't be written.
+    """
+    entries = load_entries(entries_path)
+    entry = find_entry(entries, website, username)
+    if entry is None:
+        raise ValueError("Entry not found.")
+    move_to_deleted(entries, deleted_path, entry, laptop, "deleted")
+    save_entries(entries_path, entries)
+
+
+def edit_entry(
+    entries_path: Path,
+    deleted_path: Path,
+    laptop: str,
+    original: Entry,
+    new_entry: Entry,
+) -> bool:
+    """Save changes to one entry, returning whether anything was saved.
+
+    An entry never clashes with itself, so a capitals-only change is fine.
+    A clash with a different entry sends that entry to the deleted-entries
+    file first. The old version of the edited entry is not kept.
+
+    Args:
+        entries_path (Path): The entries file, normally settings.ENTRIES_FILE.
+        deleted_path (Path): The deleted-entries file, normally settings.DELETED_ENTRIES_FILE.
+        laptop (str): Which laptop was connected.
+        original (Entry): The entry as it was when picked from the search results.
+        new_entry (Entry): The entry after editing, already cleaned, with its password locked.
+
+    Returns:
+        bool: True if the changes were saved, False if nothing changed.
+
+    Raises:
+        ValueError: If the original entry isn't found. Nothing is changed.
+        StorageError: If entries.json is missing or damaged.
+        OSError: If a file can't be written.
+    """
+    entries = load_entries(entries_path)
+    current = find_entry(entries, original["website"], original["username"])
+    if current is None:
+        raise ValueError("Entry not found.")
+    if new_entry == current:
+        return False
+
+    clash = find_entry(entries, new_entry["website"], new_entry["username"])
+    if clash is not None and clash is not current:
+        move_to_deleted(entries, deleted_path, clash, laptop, "overwritten")
+
+    current["website"] = new_entry["website"]
+    current["username"] = new_entry["username"]
+    current["password"] = new_entry["password"]
+    save_entries(entries_path, entries)
+    return True
