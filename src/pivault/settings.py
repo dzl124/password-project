@@ -55,6 +55,8 @@ TWOFA_ISSUER = "PiVault"
 TWOFA_ACCOUNT = "vault"
 # 30-second steps accepted either side of now, to allow for clock drift
 TWOFA_VALID_WINDOW = 1
+# Setup key shown in groups of 4, like JBSW Y3DP EHPK 3PXP
+TWOFA_KEY_GROUP_SIZE = 4
 
 # Folders and files
 # Vault paths
