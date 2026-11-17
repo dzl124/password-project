@@ -1,5 +1,8 @@
 """Tests for the pivault storage functions."""
 
+import json
+import os
+from datetime import datetime, timedelta
 from pathlib import Path
 
 import pytest
@@ -8,11 +11,18 @@ from pivault import settings
 from pivault.vault.storage import (
     Entry,
     StorageError,
+    add_entry,
+    append_deleted,
     clean_username,
     clean_website,
     compare_form,
+    delete_entry,
+    edit_entry,
     find_entry,
     load_entries,
+    move_to_deleted,
+    save_entries,
+    save_file_safely,
     search,
 )
 
@@ -375,3 +385,357 @@ def test_load_entries_duplicate(tmp_path: Path) -> None:
     ]"""
     with pytest.raises(StorageError):
         load_entries(write_entries_file(tmp_path, text))
+
+
+# save_file_safely
+
+def test_save_file_safely_new_file(tmp_path: Path) -> None:
+    """Test that saving to a new path creates it with exactly that text."""
+    path = tmp_path / "file.json"
+    save_file_safely(path, "hello caf\u00e9")
+    assert path.read_text(encoding="utf-8") == "hello caf\u00e9"
+
+
+def test_save_file_safely_overwrite(tmp_path: Path) -> None:
+    """Test that saving twice leaves only the second text."""
+    path = tmp_path / "file.json"
+    save_file_safely(path, "first")
+    save_file_safely(path, "second")
+    assert path.read_text(encoding="utf-8") == "second"
+
+
+def test_save_file_safely_no_leftovers(tmp_path: Path) -> None:
+    """Test that no .tmp file is left in the folder after saving."""
+    path = tmp_path / "file.json"
+    save_file_safely(path, "first")
+    save_file_safely(path, "second")
+    assert list(tmp_path.iterdir()) == [path]
+
+
+def test_save_file_safely_owner_only(tmp_path: Path) -> None:
+    """Test that the saved file can only be read and written by its owner."""
+    path = tmp_path / "file.json"
+    save_file_safely(path, "secret")
+    assert path.stat().st_mode & 0o777 == 0o600
+
+
+def test_save_file_safely_failure_keeps_old_file(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Test that a failed swap keeps the old file, removes the temp file and raises."""
+    path = tmp_path / "file.json"
+    save_file_safely(path, "old")
+
+    def failing_replace(source: str, target: Path) -> None:
+        raise OSError(f"disk full while moving {source} to {target}")
+
+    monkeypatch.setattr(os, "replace", failing_replace)
+    with pytest.raises(OSError):
+        save_file_safely(path, "new")
+    assert path.read_text(encoding="utf-8") == "old"
+    assert list(tmp_path.iterdir()) == [path]
+
+
+# save_entries
+
+def two_entries() -> list[Entry]:
+    """Return a fresh list of two sample entries."""
+    return [
+        {"website": "netflix", "username": "Denzel", "password": "token1"},
+        {"website": "amazon", "username": "jeffa", "password": "token2"},
+    ]
+
+
+def test_save_entries_round_trip(tmp_path: Path) -> None:
+    """Test that saving then loading gives back the same list, in the same order."""
+    path = tmp_path / "entries.json"
+    save_entries(path, two_entries())
+    assert load_entries(path) == two_entries()
+
+
+def test_save_entries_empty_vault(tmp_path: Path) -> None:
+    """Test that an empty list saves and loads back as an empty vault."""
+    path = tmp_path / "entries.json"
+    save_entries(path, [])
+    assert not load_entries(path)
+
+
+def test_save_entries_overwrite(tmp_path: Path) -> None:
+    """Test that saving a shorter list replaces what was there."""
+    path = tmp_path / "entries.json"
+    save_entries(path, two_entries())
+    save_entries(path, two_entries()[:1])
+    assert load_entries(path) == two_entries()[:1]
+
+
+def test_save_entries_readable(tmp_path: Path) -> None:
+    """Test that the file is indented and ends with a newline."""
+    path = tmp_path / "entries.json"
+    save_entries(path, two_entries())
+    text = path.read_text(encoding="utf-8")
+    assert text.startswith("[\n  {")
+    assert text.endswith("\n")
+
+
+def test_save_entries_owner_only(tmp_path: Path) -> None:
+    """Test that the entries file is owner-only, because it goes through save_file_safely."""
+    path = tmp_path / "entries.json"
+    save_entries(path, two_entries())
+    assert path.stat().st_mode & 0o777 == 0o600
+
+
+# append_deleted
+
+def read_deleted(path: Path) -> list[dict[str, str]]:
+    """Read every record in a deleted-entries file, one JSON object per line."""
+    lines = path.read_text(encoding="utf-8").splitlines()
+    return [json.loads(line) for line in lines]
+
+
+def test_append_deleted_one_line(tmp_path: Path) -> None:
+    """Test that one call writes one line holding the entry plus three new keys."""
+    path = tmp_path / "deleted.jsonl"
+    append_deleted(path, two_entries()[0], "macbook", "deleted")
+    records = read_deleted(path)
+    assert len(records) == 1
+    assert set(records[0]) == {
+        "website", "username", "password", "laptop", "deleted_at", "reason"
+    }
+
+
+def test_append_deleted_two_lines(tmp_path: Path) -> None:
+    """Test that a second call adds a line and leaves the first unchanged."""
+    path = tmp_path / "deleted.jsonl"
+    append_deleted(path, two_entries()[0], "macbook", "deleted")
+    first_line = path.read_text(encoding="utf-8")
+    append_deleted(path, two_entries()[1], "macbook", "overwritten")
+    text = path.read_text(encoding="utf-8")
+    assert text.startswith(first_line)
+    assert len(text.splitlines()) == 2
+
+
+def test_append_deleted_record_values(tmp_path: Path) -> None:
+    """Test that the record keeps the locked password and the laptop and reason given."""
+    path = tmp_path / "deleted.jsonl"
+    append_deleted(path, two_entries()[0], "macbook", "overwritten")
+    record = read_deleted(path)[0]
+    assert record["password"] == "token1"
+    assert record["laptop"] == "macbook"
+    assert record["reason"] == "overwritten"
+
+
+def test_append_deleted_time_is_utc(tmp_path: Path) -> None:
+    """Test that deleted_at is an ISO 8601 time in UTC."""
+    path = tmp_path / "deleted.jsonl"
+    append_deleted(path, two_entries()[0], "macbook", "deleted")
+    deleted_at = datetime.fromisoformat(read_deleted(path)[0]["deleted_at"])
+    assert deleted_at.utcoffset() == timedelta(0)
+
+
+def test_append_deleted_bad_reason(tmp_path: Path) -> None:
+    """Test that a bad reason raises before anything is written."""
+    path = tmp_path / "deleted.jsonl"
+    entry = two_entries()[0]
+    with pytest.raises(ValueError):
+        append_deleted(path, entry, "macbook", "overwriten")
+    assert not path.exists()
+    assert entry == two_entries()[0]
+
+
+# move_to_deleted
+
+def test_move_to_deleted_removes_entry(tmp_path: Path) -> None:
+    """Test that the entry is taken out of the list."""
+    entries = two_entries()
+    move_to_deleted(entries, tmp_path / "deleted.jsonl", entries[0], "macbook", "deleted")
+    assert entries == two_entries()[1:]
+
+
+def test_move_to_deleted_records_entry(tmp_path: Path) -> None:
+    """Test that the entry is written to the deleted file with the reason given."""
+    path = tmp_path / "deleted.jsonl"
+    entries = two_entries()
+    move_to_deleted(entries, path, entries[0], "macbook", "overwritten")
+    record = read_deleted(path)[0]
+    assert record["website"] == "netflix"
+    assert record["reason"] == "overwritten"
+
+
+def test_move_to_deleted_changes_list_in_place(tmp_path: Path) -> None:
+    """Test that the caller's own list is changed, not replaced with a new one."""
+    entries = two_entries()
+    same_list = entries
+    move_to_deleted(entries, tmp_path / "deleted.jsonl", entries[1], "macbook", "deleted")
+    assert same_list is entries
+    assert len(same_list) == 1
+
+
+def test_move_to_deleted_does_not_save(tmp_path: Path) -> None:
+    """Test that only the deleted file is written; the caller still has to save."""
+    move_to_deleted(two_entries(), tmp_path / "deleted.jsonl", two_entries()[0], "mac", "deleted")
+    assert list(tmp_path.iterdir()) == [tmp_path / "deleted.jsonl"]
+
+
+def test_move_to_deleted_bad_reason(tmp_path: Path) -> None:
+    """Test that a bad reason leaves the list unchanged, because the deleted file comes first."""
+    entries = two_entries()
+    with pytest.raises(ValueError):
+        move_to_deleted(entries, tmp_path / "deleted.jsonl", entries[0], "macbook", "oops")
+    assert entries == two_entries()
+
+
+# add_entry, delete_entry and edit_entry
+
+def make_vault(folder: Path, entries: list[Entry]) -> tuple[Path, Path]:
+    """Save entries to a test vault and return the entries and deleted-entries paths."""
+    entries_path = folder / "entries.json"
+    save_entries(entries_path, entries)
+    return entries_path, folder / "deleted.jsonl"
+
+
+NEW_ENTRY: Entry = {"website": "spotify", "username": "bob", "password": "token3"}
+
+
+# add_entry
+
+def test_add_entry_empty_vault(tmp_path: Path) -> None:
+    """Test that adding to an empty vault saves just that entry and deletes nothing."""
+    entries_path, deleted_path = make_vault(tmp_path, [])
+    add_entry(entries_path, deleted_path, "macbook", dict(NEW_ENTRY))
+    assert load_entries(entries_path) == [NEW_ENTRY]
+    assert not deleted_path.exists()
+
+
+def test_add_entry_second_entry(tmp_path: Path) -> None:
+    """Test that a new entry is added after the ones already saved."""
+    entries_path, deleted_path = make_vault(tmp_path, two_entries())
+    add_entry(entries_path, deleted_path, "macbook", dict(NEW_ENTRY))
+    assert load_entries(entries_path) == two_entries() + [NEW_ENTRY]
+
+
+def test_add_entry_overwrite(tmp_path: Path) -> None:
+    """Test that adding an existing entry replaces it and keeps the old one in the deleted file."""
+    entries_path, deleted_path = make_vault(tmp_path, two_entries())
+    new: Entry = {"website": "netflix", "username": "Denzel", "password": "newtoken"}
+    add_entry(entries_path, deleted_path, "macbook", new)
+    assert load_entries(entries_path) == [two_entries()[1], new]
+    record = read_deleted(deleted_path)[0]
+    assert record["password"] == "token1"
+    assert record["reason"] == "overwritten"
+
+
+def test_add_entry_overwrite_ignores_capitals(tmp_path: Path) -> None:
+    """Test that a duplicate differing only by capitals still overwrites, with the new capitals."""
+    entries_path, deleted_path = make_vault(tmp_path, two_entries())
+    new: Entry = {"website": "netflix", "username": "denzel", "password": "newtoken"}
+    add_entry(entries_path, deleted_path, "macbook", new)
+    entries = load_entries(entries_path)
+    assert len(entries) == 2
+    assert new in entries
+    assert len(read_deleted(deleted_path)) == 1
+
+
+def test_add_entry_missing_file(tmp_path: Path) -> None:
+    """Test that a missing entries.json raises StorageError and writes nothing."""
+    deleted_path = tmp_path / "deleted.jsonl"
+    with pytest.raises(StorageError):
+        add_entry(tmp_path / "entries.json", deleted_path, "macbook", dict(NEW_ENTRY))
+    assert not list(tmp_path.iterdir())
+
+
+# delete_entry
+
+def test_delete_entry_removes_it(tmp_path: Path) -> None:
+    """Test that the entry is gone and the other one is untouched."""
+    entries_path, deleted_path = make_vault(tmp_path, two_entries())
+    delete_entry(entries_path, deleted_path, "macbook", "netflix", "Denzel")
+    assert load_entries(entries_path) == two_entries()[1:]
+
+
+def test_delete_entry_records_it(tmp_path: Path) -> None:
+    """Test that the deleted entry is in the deleted file with reason deleted."""
+    entries_path, deleted_path = make_vault(tmp_path, two_entries())
+    delete_entry(entries_path, deleted_path, "macbook", "netflix", "Denzel")
+    record = read_deleted(deleted_path)[0]
+    assert record["password"] == "token1"
+    assert record["reason"] == "deleted"
+
+
+def test_delete_entry_ignores_capitals(tmp_path: Path) -> None:
+    """Test that capitals in the website and username don't matter."""
+    entries_path, deleted_path = make_vault(tmp_path, two_entries())
+    delete_entry(entries_path, deleted_path, "macbook", "NETFLIX", "DENZEL")
+    assert load_entries(entries_path) == two_entries()[1:]
+
+
+def test_delete_entry_not_found(tmp_path: Path) -> None:
+    """Test that a missing entry raises ValueError and changes neither file."""
+    entries_path, deleted_path = make_vault(tmp_path, two_entries())
+    before = entries_path.read_text(encoding="utf-8")
+    with pytest.raises(ValueError):
+        delete_entry(entries_path, deleted_path, "macbook", "google", "bob")
+    assert entries_path.read_text(encoding="utf-8") == before
+    assert not deleted_path.exists()
+
+
+def test_delete_entry_last_one(tmp_path: Path) -> None:
+    """Test that deleting the only entry leaves an empty vault."""
+    entries_path, deleted_path = make_vault(tmp_path, two_entries()[:1])
+    delete_entry(entries_path, deleted_path, "macbook", "netflix", "Denzel")
+    assert not load_entries(entries_path)
+
+
+# edit_entry
+
+def test_edit_entry_password(tmp_path: Path) -> None:
+    """Test that changing the password saves it and sends nothing to the deleted file."""
+    entries_path, deleted_path = make_vault(tmp_path, two_entries())
+    original = two_entries()[0]
+    new: Entry = {**original, "password": "new"}
+    assert edit_entry(entries_path, deleted_path, "macbook", original, new)
+    assert load_entries(entries_path)[0]["password"] == "new"
+    assert not deleted_path.exists()
+
+
+def test_edit_entry_capitals_only(tmp_path: Path) -> None:
+    """Test that changing only capitals is saved and doesn't count as a clash with itself."""
+    entries_path, deleted_path = make_vault(tmp_path, two_entries())
+    original = two_entries()[0]
+    new: Entry = {**original, "username": "denzel"}
+    assert edit_entry(entries_path, deleted_path, "macbook", original, new)
+    entries = load_entries(entries_path)
+    assert entries[0]["username"] == "denzel"
+    assert len(entries) == 2
+    assert not deleted_path.exists()
+
+
+def test_edit_entry_clash(tmp_path: Path) -> None:
+    """Test that renaming onto another entry overwrites it and keeps it in the deleted file."""
+    entries_path, deleted_path = make_vault(tmp_path, two_entries())
+    original = two_entries()[0]
+    new: Entry = {"website": "amazon", "username": "jeffa", "password": "token1"}
+    assert edit_entry(entries_path, deleted_path, "macbook", original, new)
+    assert load_entries(entries_path) == [new]
+    record = read_deleted(deleted_path)[0]
+    assert record["password"] == "token2"
+    assert record["reason"] == "overwritten"
+
+
+def test_edit_entry_no_change(tmp_path: Path) -> None:
+    """Test that no change returns False and leaves the file exactly as it was."""
+    entries_path, deleted_path = make_vault(tmp_path, two_entries())
+    before = entries_path.read_text(encoding="utf-8")
+    original = two_entries()[0]
+    assert not edit_entry(entries_path, deleted_path, "macbook", original, dict(original))
+    assert entries_path.read_text(encoding="utf-8") == before
+
+
+def test_edit_entry_missing_original(tmp_path: Path) -> None:
+    """Test that an original that isn't saved raises ValueError and changes nothing."""
+    entries_path, deleted_path = make_vault(tmp_path, two_entries())
+    before = entries_path.read_text(encoding="utf-8")
+    missing: Entry = {"website": "google", "username": "bob", "password": "x"}
+    with pytest.raises(ValueError):
+        edit_entry(entries_path, deleted_path, "macbook", missing, dict(NEW_ENTRY))
+    assert entries_path.read_text(encoding="utf-8") == before
+    assert not deleted_path.exists()
