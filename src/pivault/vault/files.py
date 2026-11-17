@@ -36,3 +36,24 @@ def save_file_safely(path: Path, text: str) -> None:
         os.fsync(folder_fd)
     finally:
         os.close(folder_fd)
+
+
+def append_line(path: Path, line: str) -> None:
+    """Add one line to the end of a file and force it to disk.
+
+    For append-only files (the deleted-entries file and the access log):
+    the file is only ever added to, never rewritten. Creates the file if
+    it doesn't exist.
+
+    Args:
+        path (Path): The file to add to.
+        line (str): The line to add, without its newline.
+
+    Raises:
+        OSError: If the file can't be opened or written, for example when
+        the folder is missing or the disk is full.
+    """
+    with open(path, "a", encoding="utf-8") as file:
+        file.write(line + "\n")
+        file.flush()
+        os.fsync(file.fileno())

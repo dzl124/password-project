@@ -1,13 +1,12 @@
 """Storage functions for the pivault application: entries and deleted entries."""
 
 import json
-import os
 import unicodedata
 from datetime import datetime, timezone
 from pathlib import Path
 
 from pivault import settings
-from pivault.vault.files import save_file_safely
+from pivault.vault.files import append_line, save_file_safely
 
 
 # One saved entry: website, username and the locked password, all as text.
@@ -226,10 +225,7 @@ def append_deleted(path: Path, entry: Entry, laptop: str, reason: str) -> None:
         raise ValueError(f"Invalid delete reason: {reason!r}.")
     deleted_at = datetime.now(timezone.utc).isoformat(timespec="seconds")
     record = {**entry, "laptop": laptop, "deleted_at": deleted_at, "reason": reason}
-    with open(path, "a", encoding="utf-8") as file:
-        file.write(json.dumps(record) + "\n")
-        file.flush()
-        os.fsync(file.fileno())
+    append_line(path, json.dumps(record))
 
 
 def move_to_deleted(
