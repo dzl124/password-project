@@ -9,4 +9,4 @@ requires-python = ">= 3.13"
 dependencies = ["cryptography", "pyotp", "qrcode"]
 
 [dependency-groups]
-dev = ["pytest"]
+dev = ["pytest", "types-qrcode"]

@@ -48,6 +48,14 @@ RECOVERY_CODE_GROUP_SIZE = 4
 # Number of groups; LENGTH must divide evenly by GROUP_SIZE
 RECOVERY_CODE_GROUP_TOTAL = RECOVERY_CODE_LENGTH // RECOVERY_CODE_GROUP_SIZE
 
+# 2FA
+# Name shown in the authenticator app
+TWOFA_ISSUER = "PiVault"
+# Label shown under the name in the authenticator app
+TWOFA_ACCOUNT = "vault"
+# 30-second steps accepted either side of now, to allow for clock drift
+TWOFA_VALID_WINDOW = 1
+
 # Folders and files
 # Vault paths
 VAULT_FOLDER = Path("/var/lib/pivault")
