@@ -1,5 +1,7 @@
 """The Session object: everything a vault screen needs, carried in one place."""
 
+import time
+from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -27,6 +29,8 @@ class Session:
         lockbox_path (Path): The master-key lockbox.
         twofa_secret_path (Path): The 2FA secret.
         vault_key (bytes | None): The unlocked vault key, or None when locked.
+        clock (Callable[[], float]): Gives the current time in seconds;
+            tests pass a fake one.
     """
 
     laptop: str
@@ -39,6 +43,7 @@ class Session:
     lockbox_path: Path = settings.MASTER_KEY_LOCKBOX_FILE
     twofa_secret_path: Path = settings.TWOFA_SECRET_FILE
     vault_key: bytes | None = None
+    clock: Callable[[], float] = time.monotonic
 
     def lock_vault(self) -> None:
         """Forget the vault key, so nothing can be unlocked until the master key is typed again."""
