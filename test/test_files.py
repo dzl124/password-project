@@ -5,7 +5,7 @@ from pathlib import Path
 
 import pytest
 
-from pivault.vault.files import save_file_safely
+from pivault.vault.files import append_line, save_file_safely
 
 
 # save_file_safely
@@ -55,3 +55,26 @@ def test_save_file_safely_failure_keeps_old_file(
         save_file_safely(path, "new")
     assert path.read_text(encoding="utf-8") == "old"
     assert list(tmp_path.iterdir()) == [path]
+
+
+# append_line
+
+def test_append_line_creates_file(tmp_path: Path) -> None:
+    """Test that appending to a file that doesn't exist creates it with that line."""
+    path = tmp_path / "log.txt"
+    append_line(path, "first")
+    assert path.read_text(encoding="utf-8") == "first\n"
+
+
+def test_append_line_keeps_earlier_lines(tmp_path: Path) -> None:
+    """Test that each call adds one line to the end and never changes earlier ones."""
+    path = tmp_path / "log.txt"
+    append_line(path, "first")
+    append_line(path, "second")
+    assert path.read_text(encoding="utf-8") == "first\nsecond\n"
+
+
+def test_append_line_missing_folder(tmp_path: Path) -> None:
+    """Test that appending in a folder that doesn't exist raises OSError."""
+    with pytest.raises(OSError):
+        append_line(tmp_path / "nope" / "log.txt", "line")
