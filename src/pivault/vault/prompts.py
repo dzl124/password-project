@@ -5,6 +5,8 @@ master key and a 2FA code. Kept here so the admin commands can reuse them
 without depending on the vault app.
 """
 
+from collections.abc import Callable
+
 from pivault.vault.screen import read_line
 from pivault.vault.session import Session
 from pivault.vault.storage import clean_username, clean_website
@@ -12,9 +14,15 @@ from pivault.vault.storage import clean_username, clean_website
 YES_ANSWERS = ("y", "yes")
 NO_ANSWERS = ("n", "no")
 
+# A password check like password_checker: takes the password, returns one message per broken rule.
+PasswordCheck = Callable[[str], list[str]]
 
-def _ask(session: Session, prompt: str, hidden: bool, deadline: float) -> str:
+
+def ask_line(session: Session, prompt: str, hidden: bool, deadline: float) -> str:
     """Ask once with whatever time is left before the screen's deadline.
+
+    Public so get.py and app.py can read a line against one fixed deadline,
+    where invalid input must not reset the time.
 
     Args:
         session (Session): Where keys come from and text goes.
@@ -46,7 +54,7 @@ def ask_yes_no(session: Session, question: str, seconds: float) -> bool:
     """
     deadline = session.clock() + seconds
     while True:
-        answer = _ask(session, question, False, deadline).strip().casefold()
+        answer = ask_line(session, question, False, deadline).strip().casefold()
         if answer in YES_ANSWERS:
             return True
         if answer in NO_ANSWERS:
@@ -54,60 +62,93 @@ def ask_yes_no(session: Session, question: str, seconds: float) -> bool:
         session.write("Please type y or n.\r\n")
 
 
-def ask_website(session: Session, seconds: float) -> str:
+def ask_website(session: Session, seconds: float, current: str | None = None) -> str:
     """Ask for a website until it passes clean_website.
 
+    With current (Edit), the prompt shows it in brackets and pressing
+    Enter keeps it.
+
     Args:
         session (Session): The current session.
         seconds (float): The time limit for this screen.
+        current (str | None): The saved website to keep on Enter, or None (Add).
 
     Returns:
-        str: The cleaned website.
+        str: The cleaned website, or current if Enter was pressed.
     """
+    if current is None:
+        prompt = "Website (name only, like netflix): "
+    else:
+        prompt = f"Website [{current}]: "
     deadline = session.clock() + seconds
     while True:
+        typed = ask_line(session, prompt, False, deadline)
+        if current is not None and not typed.strip():
+            return current
         try:
-            return clean_website(_ask(session, "Website: ", False, deadline))
+            return clean_website(typed)
         except ValueError as error:
             session.write(f"{error}\r\n")
 
 
-def ask_username(session: Session, seconds: float) -> str:
+def ask_username(session: Session, seconds: float, current: str | None = None) -> str:
     """Ask for a username until it passes clean_username.
 
+    With current (Edit), the prompt shows it in brackets and pressing
+    Enter keeps it.
+
     Args:
         session (Session): The current session.
         seconds (float): The time limit for this screen.
+        current (str | None): The saved username to keep on Enter, or None (Add).
 
     Returns:
-        str: The cleaned username.
+        str: The cleaned username, or current if Enter was pressed.
     """
+    prompt = "Username: " if current is None else f"Username [{current}]: "
     deadline = session.clock() + seconds
     while True:
+        typed = ask_line(session, prompt, False, deadline)
+        if current is not None and not typed.strip():
+            return current
         try:
-            return clean_username(_ask(session, "Username: ", False, deadline))
+            return clean_username(typed)
         except ValueError as error:
             session.write(f"{error}\r\n")
 
 
-def ask_new_password(session: Session, seconds: float, min_length: int = 1) -> str:
-    """Ask for a new password twice, hidden, until both match and it's long enough.
+def ask_new_password(
+    session: Session,
+    seconds: float,
+    min_length: int = 1,
+    checker: PasswordCheck | None = None,
+) -> str:
+    """Ask for a new password twice, hidden, until both match and it passes the checks.
 
     Args:
         session (Session): The current session.
         seconds (float): The time limit for this screen.
         min_length (int): The fewest characters allowed. Defaults to 1.
+        checker (PasswordCheck | None): A password check like password_checker.
+            Every message it returns is shown and the password asked again.
+            None (the master-key prompts) skips it.
 
     Returns:
         str: The new password.
     """
     deadline = session.clock() + seconds
     while True:
-        password = _ask(session, "New password: ", True, deadline)
+        password = ask_line(session, "New password: ", True, deadline)
         if len(password) < min_length:
             session.write(f"Password must be at least {min_length} characters.\r\n")
             continue
-        again = _ask(session, "Type it again: ", True, deadline)
+        if checker is not None:
+            problems = checker(password)
+            if problems:
+                for problem in problems:
+                    session.write(f"{problem}\r\n")
+                continue
+        again = ask_line(session, "Type it again: ", True, deadline)
         if password == again:
             return password
         session.write("Passwords didn't match. Try again.\r\n")
@@ -127,7 +168,7 @@ def ask_master_key(session: Session, seconds: float) -> str:
     """
     deadline = session.clock() + seconds
     while True:
-        master_key = _ask(session, "Master key: ", True, deadline)
+        master_key = ask_line(session, "Enter password: ", True, deadline)
         if master_key:
             return master_key
         session.write("Master key cannot be empty.\r\n")
@@ -147,7 +188,7 @@ def ask_twofa_code(session: Session, seconds: float) -> str:
     """
     deadline = session.clock() + seconds
     while True:
-        code = _ask(session, "2FA code: ", False, deadline)
+        code = ask_line(session, "2FA code: ", False, deadline)
         if code.strip():
             return code
         session.write("2FA code cannot be empty.\r\n")

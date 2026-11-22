@@ -29,6 +29,7 @@ LOG_EVENTS = frozenset({
     "timeout",
     "quit",
     "storage_error",
+    "error",
 })
 
 

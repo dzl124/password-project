@@ -27,6 +27,9 @@ ERASE_LAST_CHAR = "\b \b"
 # Longest line read_line accepts, so a stuck key or a huge paste can't grow forever.
 MAX_INPUT_LENGTH = 256
 
+# What the decoder turns junk bytes into. read_line never types it into a line.
+REPLACEMENT_CHAR = "\N{REPLACEMENT CHARACTER}"
+
 # A function that waits up to this many seconds for one key, or returns None if none came.
 ReadKey = Callable[[float], str | None]
 
@@ -69,7 +72,7 @@ def skip_escape_sequence(read_key: ReadKey) -> None:
         read_key (ReadKey): Where keys come from.
     """
     while True:
-        key = read_key(0.05)
+        key = read_key(REST_OF_KEY_SECONDS)
         if key is None or key.isalpha() or key == "~":
             return
 
@@ -132,7 +135,7 @@ def read_line(
         if key == ESCAPE:
             skip_escape_sequence(read_key)
             continue
-        if key.isprintable() and len(typed) < MAX_INPUT_LENGTH:
+        if key.isprintable() and key != REPLACEMENT_CHAR and len(typed) < MAX_INPUT_LENGTH:
             typed.append(key)
             if not hidden:
                 write(key)
@@ -200,8 +203,10 @@ def terminal_read_key(seconds: float) -> str | None:
     """Wait up to seconds for one key on the real keyboard.
 
     The real ReadKey, used inside raw_terminal. Bytes are put together into
-    whole characters, so é arrives as one key. A closed connection (the SSH
-    session dropping) is reported as Ctrl+D, so the session ends cleanly.
+    whole characters, so é arrives as one key. Half a character whose rest
+    never comes is thrown away and the wait carries on, so None only ever
+    means the time ran out. A closed connection (the SSH session dropping)
+    is reported as Ctrl+D, so the session ends cleanly.
 
     Args:
         seconds (float): The longest to wait for a key.
@@ -210,9 +215,27 @@ def terminal_read_key(seconds: float) -> str | None:
         str | None: The key, or None if nothing was pressed in time.
     """
     fd = sys.stdin.fileno()
-    ready, _, _ = select.select([fd], [], [], seconds)
-    if not ready:
-        return None
+    deadline = time.monotonic() + seconds
+    while True:
+        time_left = max(0.0, deadline - time.monotonic())
+        ready, _, _ = select.select([fd], [], [], time_left)
+        if not ready:
+            return None
+        key = _read_character(fd)
+        if key:
+            return key
+
+
+def _read_character(fd: int) -> str:
+    """Read the bytes of one character from the keyboard.
+
+    Args:
+        fd (int): The keyboard's file number.
+
+    Returns:
+        str: The character, CTRL_D if the connection closed, or "" if only
+        half a character came (it is thrown away).
+    """
     while True:
         byte = os.read(fd, 1)
         if not byte:
@@ -223,7 +246,7 @@ def terminal_read_key(seconds: float) -> str | None:
         ready, _, _ = select.select([fd], [], [], REST_OF_KEY_SECONDS)
         if not ready:
             UTF8_DECODER.reset()
-            return None
+            return ""
 
 
 def terminal_write(text: str) -> None:

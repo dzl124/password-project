@@ -6,6 +6,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from pivault import settings
+from pivault.vault.crypto import lock, unlock
 from pivault.vault.screen import ReadKey, Write
 
 
@@ -48,3 +49,48 @@ class Session:
     def lock_vault(self) -> None:
         """Forget the vault key, so nothing can be unlocked until the master key is typed again."""
         self.vault_key = None
+
+    def _unlocked_key(self) -> bytes:
+        """Return the vault key, refusing if the vault is locked.
+
+        Raises:
+            RuntimeError: If no correct master key has been typed yet.
+        """
+        if self.vault_key is None:
+            raise RuntimeError("The vault is locked.")
+        return self.vault_key
+
+    def lock_password(self, password: str) -> str:
+        """Lock a password with the vault key, ready to save in an entry.
+
+        Args:
+            password (str): The password as typed.
+
+        Returns:
+            str: The locked password (a Fernet token), as text for entries.json.
+
+        Raises:
+            RuntimeError: If the vault is locked.
+        """
+        return lock(password.encode("utf-8"), self._unlocked_key()).decode("ascii")
+
+    def unlock_password(self, token: str) -> str | None:
+        """Unlock a saved password with the vault key.
+
+        Args:
+            token (str): The locked password from an entry.
+
+        Returns:
+            str | None: The password, or None if the token is damaged.
+
+        Raises:
+            RuntimeError: If the vault is locked.
+        """
+        key = self._unlocked_key()
+        try:
+            data = unlock(token.encode("ascii"), key)
+        except UnicodeEncodeError:
+            return None
+        if data is None:
+            return None
+        return data.decode("utf-8")
