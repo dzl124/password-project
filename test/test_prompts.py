@@ -4,7 +4,9 @@ from collections.abc import Callable
 
 import pytest
 
+from pivault.checker import password_checker
 from pivault.vault.prompts import (
+    ask_line,
     ask_master_key,
     ask_new_password,
     ask_twofa_code,
@@ -259,3 +261,130 @@ def test_ask_twofa_code_ctrl_d() -> None:
     """Test that Ctrl+D raises QuitRequested."""
     with pytest.raises(QuitRequested):
         ask_twofa_code(ctrl_d_session(), SECONDS)
+
+
+# ask_line
+
+def test_ask_line_returns_typed_line() -> None:
+    """Test that ask_line gives back the line typed."""
+    session, shown = make_session("hello")
+    assert ask_line(session, "Q: ", False, deadline=SECONDS) == "hello"
+    assert "".join(shown).startswith("Q: ")
+
+
+def test_ask_line_hidden() -> None:
+    """Test that hidden typing is returned but never shown."""
+    session, shown = make_session("secret")
+    assert ask_line(session, "Q: ", True, deadline=SECONDS) == "secret"
+    assert "secret" not in "".join(shown)
+
+
+def test_ask_line_past_deadline() -> None:
+    """Test that a deadline already gone times out straight away, even with keys waiting."""
+    session, _ = make_session("too late")
+    with pytest.raises(ScreenTimeout):
+        ask_line(session, "Q: ", False, deadline=0.0)
+
+
+# ask_website and ask_username with a current value (Edit)
+
+def test_ask_website_enter_keeps_current() -> None:
+    """Test that Enter keeps the saved website, and the prompt shows it in brackets."""
+    session, shown = make_session("")
+    assert ask_website(session, SECONDS, current="netflix") == "netflix"
+    assert "Website [netflix]: " in "".join(shown)
+
+
+def test_ask_website_spaces_keep_current() -> None:
+    """Test that only spaces counts as Enter and keeps the saved website."""
+    session, _ = make_session("   ")
+    assert ask_website(session, SECONDS, current="netflix") == "netflix"
+
+
+def test_ask_website_new_value_replaces_current() -> None:
+    """Test that a typed website replaces the saved one and is cleaned."""
+    session, _ = make_session("  Hulu ")
+    assert ask_website(session, SECONDS, current="netflix") == "hulu"
+
+
+def test_ask_website_bad_new_value_reasked() -> None:
+    """Test that a bad new website is still refused in Edit, then Enter keeps the saved one."""
+    session, shown = make_session("net.flix", "")
+    assert ask_website(session, SECONDS, current="netflix") == "netflix"
+    assert "invalid character" in "".join(shown)
+
+
+def test_ask_website_add_prompt() -> None:
+    """Test that Add's prompt says name only, and Enter there is still an error."""
+    session, shown = make_session("", "netflix")
+    assert ask_website(session, SECONDS) == "netflix"
+    assert "name only" in "".join(shown)
+    assert "cannot be empty" in "".join(shown)
+
+
+def test_ask_username_enter_keeps_current() -> None:
+    """Test that Enter keeps the saved username, and the prompt shows it in brackets."""
+    session, shown = make_session("")
+    assert ask_username(session, SECONDS, current="Denzel") == "Denzel"
+    assert "Username [Denzel]: " in "".join(shown)
+
+
+def test_ask_username_new_value_replaces_current() -> None:
+    """Test that a typed username replaces the saved one, capitals kept."""
+    session, _ = make_session("Jeffa")
+    assert ask_username(session, SECONDS, current="Denzel") == "Jeffa"
+
+
+def test_ask_username_add_enter_is_error() -> None:
+    """Test that without a current value, Enter is still an error."""
+    session, shown = make_session("", "Denzel")
+    assert ask_username(session, SECONDS) == "Denzel"
+    assert "cannot be empty" in "".join(shown)
+
+
+# ask_new_password with a checker (Add and Edit)
+
+STRONG = "Movie!!night42"
+
+
+def test_ask_new_password_checker_lists_every_problem() -> None:
+    """Test that a weak password shows every broken rule, then a strong one is accepted."""
+    session, shown = make_session("abc", STRONG, STRONG)
+    assert ask_new_password(session, SECONDS, checker=password_checker) == STRONG
+    for problem in password_checker("abc"):
+        assert problem in "".join(shown)
+
+
+def test_ask_new_password_checker_skips_retype() -> None:
+    """Test that a password failing the checker isn't asked for a second time."""
+    session, shown = make_session("abc", STRONG, STRONG)
+    ask_new_password(session, SECONDS, checker=password_checker)
+    assert "".join(shown).count("Type it again: ") == 1
+
+
+def test_ask_new_password_checker_strong_first_time() -> None:
+    """Test that a strong password passes straight away with no messages."""
+    session, shown = make_session(STRONG, STRONG)
+    assert ask_new_password(session, SECONDS, checker=password_checker) == STRONG
+    assert "".join(shown).count("New password: ") == 1
+
+
+def test_ask_new_password_checker_only_sees_first_entry() -> None:
+    """Test that the checker runs on the password, not on the retype."""
+    checked: list[str] = []
+
+    def record(password: str) -> list[str]:
+        checked.append(password)
+        return []
+
+    session, _ = make_session("first", "first")
+    ask_new_password(session, SECONDS, checker=record)
+    assert checked == ["first"]
+
+
+def test_ask_new_password_length_checked_before_checker() -> None:
+    """Test that a too-short password gets only the length message, not the checker's."""
+    session, shown = make_session("abc", STRONG, STRONG)
+    ask_new_password(session, SECONDS, min_length=5, checker=password_checker)
+    assert "at least 5 characters" in "".join(shown)
+    assert "uppercase" not in "".join(shown)

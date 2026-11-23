@@ -58,3 +58,10 @@ def test_bad_event_writes_nothing(tmp_path: Path) -> None:
     with pytest.raises(ValueError):
         log_event(path, "veiw", "macbook", True)
     assert not path.exists()
+
+
+def test_error_event_is_allowed(tmp_path: Path) -> None:
+    """Test that the "error" event for unexpected crashes can be logged."""
+    path = tmp_path / "access.log"
+    log_event(path, "error", "macbook", False)
+    assert read_log(path)[0]["event"] == "error"

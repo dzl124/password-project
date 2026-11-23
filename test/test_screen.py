@@ -1,6 +1,12 @@
 """Tests for the pivault screen helpers, using a fake keyboard, screen and clock."""
 
-from collections.abc import Callable
+import os
+import pty
+import sys
+import termios
+import threading
+import time
+from collections.abc import Callable, Iterator
 
 import pytest
 
@@ -12,13 +18,19 @@ from pivault.vault.screen import (
     ERASE_LAST_CHAR,
     ESCAPE,
     MAX_INPUT_LENGTH,
+    REPLACEMENT_CHAR,
+    REST_OF_KEY_SECONDS,
+    UTF8_DECODER,
     QuitRequested,
     ReadKey,
     ScreenTimeout,
     clear_screen,
+    raw_terminal,
     read_line,
     show_for,
     skip_escape_sequence,
+    terminal_read_key,
+    terminal_write,
 )
 
 ENTER = "\r"
@@ -233,3 +245,148 @@ def test_show_for_ctrl_d_quits_after_clearing() -> None:
 def test_show_for_deadline_ends_it() -> None:
     """Test that the time limit ends it even while keys keep coming."""
     assert run_show_for(["a"] * 100, fake_clock(20)) == ["PASSWORD", CLEAR_SCREEN]
+
+
+# The new behaviour from 2026-11-22
+
+def test_skip_escape_sequence_uses_short_wait() -> None:
+    """Test that each part of an arrow key is waited for with REST_OF_KEY_SECONDS."""
+    waits: list[float] = []
+
+    def read_key(seconds: float) -> str | None:
+        waits.append(seconds)
+        return "A"
+
+    skip_escape_sequence(read_key)
+    assert waits == [REST_OF_KEY_SECONDS]
+
+
+def test_read_line_ignores_replacement_char() -> None:
+    """Test that the junk-byte character is never typed into the line or shown."""
+    line, shown = type_line(["a", REPLACEMENT_CHAR, "b", ENTER])
+    assert line == "ab"
+    assert REPLACEMENT_CHAR not in shown
+
+
+# terminal_read_key, using a pipe in place of the real keyboard
+
+class FakeStdin:
+    """Stands in for sys.stdin, pointing at the reading end of a pipe."""
+
+    def __init__(self, fd: int) -> None:
+        self.fd = fd
+
+    def fileno(self) -> int:
+        """Return the pipe's file number, the way sys.stdin.fileno() would."""
+        return self.fd
+
+
+@pytest.fixture(name="keyboard")
+def fixture_keyboard(monkeypatch: pytest.MonkeyPatch) -> Iterator[int]:
+    """Point sys.stdin at a pipe and give the test the end it can "type" into."""
+    read_end, write_end = os.pipe()
+    monkeypatch.setattr(sys, "stdin", FakeStdin(read_end))
+    UTF8_DECODER.reset()
+    yield write_end
+    UTF8_DECODER.reset()
+    os.close(read_end)
+    try:
+        os.close(write_end)
+    except OSError:
+        pass
+
+
+def test_terminal_read_key_letter(keyboard: int) -> None:
+    """Test that one typed letter comes back as that letter."""
+    os.write(keyboard, b"a")
+    assert terminal_read_key(1) == "a"
+
+
+def test_terminal_read_key_two_byte_character(keyboard: int) -> None:
+    """Test that é (2 bytes) comes back as one key."""
+    os.write(keyboard, "é".encode("utf-8"))
+    assert terminal_read_key(1) == "é"
+
+
+def test_terminal_read_key_nothing_typed(keyboard: int) -> None:
+    """Test that nothing typed in time gives None."""
+    del keyboard
+    assert terminal_read_key(0.1) is None
+
+
+def test_terminal_read_key_connection_closed(keyboard: int) -> None:
+    """Test that a closed connection comes back as Ctrl+D."""
+    os.close(keyboard)
+    assert terminal_read_key(1) == CTRL_D
+
+
+def test_terminal_read_key_half_character_keeps_waiting(keyboard: int) -> None:
+    """Test that half a character is thrown away and the wait carries on, instead of a timeout."""
+    os.write(keyboard, "é".encode("utf-8")[:1])
+    threading.Timer(0.3, os.write, args=(keyboard, b"a")).start()
+    start = time.monotonic()
+    assert terminal_read_key(2) == "a"
+    assert time.monotonic() - start >= 0.2
+
+
+# terminal_write
+
+def test_terminal_write_exact_text(capsys: pytest.CaptureFixture[str]) -> None:
+    """Test that the text goes out exactly as given, with no extra newline."""
+    terminal_write("hi\r\n")
+    terminal_write("there")
+    assert capsys.readouterr().out == "hi\r\nthere"
+
+
+def test_terminal_write_empty(capsys: pytest.CaptureFixture[str]) -> None:
+    """Test that writing nothing shows nothing."""
+    terminal_write("")
+    assert capsys.readouterr().out == ""
+
+
+# raw_terminal, using a pretend terminal (a pty)
+
+@pytest.fixture(name="terminal")
+def fixture_terminal(monkeypatch: pytest.MonkeyPatch) -> Iterator[int]:
+    """Point sys.stdin at a pretend terminal and give the test its file number."""
+    main_end, terminal_end = pty.openpty()
+    monkeypatch.setattr(sys, "stdin", FakeStdin(terminal_end))
+    yield terminal_end
+    os.close(main_end)
+    os.close(terminal_end)
+
+
+def echo_on(fd: int) -> bool:
+    """Return whether the terminal shows typed keys by itself."""
+    return bool(termios.tcgetattr(fd)[3] & termios.ECHO)
+
+
+def settings_of(fd: int) -> list[int]:
+    """Return the terminal's flags, minus PENDIN, which macOS sets by itself leaving raw mode."""
+    flags = termios.tcgetattr(fd)[:4]
+    flags[3] &= ~termios.PENDIN
+    return flags
+
+
+def test_raw_terminal_turns_echo_off(terminal: int) -> None:
+    """Test that inside the block the terminal no longer shows keys by itself."""
+    assert echo_on(terminal)
+    with raw_terminal():
+        assert not echo_on(terminal)
+
+
+def test_raw_terminal_restores_settings(terminal: int) -> None:
+    """Test that the old settings are back exactly after the block."""
+    before = settings_of(terminal)
+    with raw_terminal():
+        pass
+    assert settings_of(terminal) == before
+
+
+def test_raw_terminal_restores_after_crash(terminal: int) -> None:
+    """Test that the settings come back even when the block crashes."""
+    before = settings_of(terminal)
+    with pytest.raises(ValueError):
+        with raw_terminal():
+            raise ValueError("crash")
+    assert settings_of(terminal) == before
